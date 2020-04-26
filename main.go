@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -9,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+
+	"github.com/cheggaaa/pb"
 )
 
 var segments []string
@@ -19,14 +22,16 @@ func main() {
 	title := flag.String("title", "output", "filename for the output")
 	flag.Parse()
 
-	fmt.Println(*chunkCount)
-
 	// grab all of the segments
 	if *chunkCount != 0 {
+		bar := pb.StartNew(*chunkCount) // progress bar :)
 		for i := 1; i < *chunkCount+1; i++ {
 			_ = makeRequest(i)
+			bar.Increment()
 		}
+		bar.Finish()
 	} else {
+		bar := pb.StartNew(255)
 		counter := 1
 		for {
 			err := makeRequest(counter)
@@ -34,13 +39,24 @@ func main() {
 				break
 			}
 			counter++
+			bar.Increment()
 		}
+		bar.Finish()
+
+		// is my hunch right in assuming that the chunks will never go beyond a certain length?
+		// for i := 1; i < 255; i++ {
+		// 	err := makeRequest(i)
+		// 	if err != nil {
+		// 		break
+		// 	}
+		// 	bar.Increment()
+		// }
 	}
 
 	for i, seg := range segments {
 		// convert all segments to working version of vlc ts
 		cmd := exec.Command("ffmpeg", "-i", seg, "-c", "copy", seg+".fixed.ts")
-		fmt.Println(cmd.String())
+		log.Println(cmd.String())
 		err := cmd.Run()
 		if err != nil {
 			log.Fatalf("[ error ] error converting to fixed version: %s\n", err)
@@ -50,7 +66,7 @@ func main() {
 
 		// convert to mp4
 		cmd = exec.Command("ffmpeg", "-i", seg, "-c", "copy", seg+".mp4")
-		fmt.Println(cmd.String())
+		log.Println(cmd.String())
 		err = cmd.Run()
 		if err != nil {
 			log.Fatalf("[ error ] error converting to fixed version: %s\n", err)
@@ -64,7 +80,7 @@ func main() {
 	// create the command
 	filename := *title + ".mp4"
 	cmd := exec.Command("ffmpeg", "-f", "concat", "-i", "input.txt", "-c", "copy", filename)
-	fmt.Println("[ info ] command to be run: " + cmd.String())
+	log.Println("[ info ] command to be run: " + cmd.String())
 	err := cmd.Run()
 	if err != nil {
 		log.Fatalf("[ error ] error during concat: %s\n", err)
@@ -98,14 +114,27 @@ func createInputConcat() {
 	file.Close()
 }
 
+// todo:
+// add check for size to break out
 func makeRequest(chunk int) error {
-	url := fmt.Sprintf("", chunk)
+	url := fmt.Sprintf("%d", chunk)
 
 	filepath := fmt.Sprintf("seg-%d-v1-a1.ts", chunk)
 	segments = append(segments, filepath) // use this to create the ffmpeg concat
 
 	if _, err := os.Stat(filepath); err == nil {
 		return err
+	}
+
+	response, err := http.Get(url)
+	if err != nil {
+		fmt.Println("Error while downloading", url, "-", err)
+		return err
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode == 404 {
+		return errors.New("End of content")
 	}
 
 	output, err := os.Create(filepath)
@@ -115,19 +144,11 @@ func makeRequest(chunk int) error {
 	}
 	defer output.Close()
 
-	response, err := http.Get(url)
-	if err != nil {
-		fmt.Println("Error while downloading", url, "-", err)
-		return err
-	}
-	defer response.Body.Close()
-
-	n, err := io.Copy(output, response.Body)
+	_, err = io.Copy(output, response.Body)
 	if err != nil {
 		fmt.Println("Error while downloading", url, "-", err)
 		return err
 	}
 
-	fmt.Println(n, "bytes downloaded.")
 	return nil
 }
